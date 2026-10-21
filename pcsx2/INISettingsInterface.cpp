@@ -16,6 +16,7 @@
 #include <io.h> // _mktemp_s
 #else
 #include <stdlib.h> // mktemp
+#include <sys/stat.h> // fchmod
 #include <unistd.h>
 #endif
 
@@ -48,6 +49,12 @@ static std::FILE* GetTemporaryFile(std::string* temporary_filename, const std::s
 		Error::SetErrno(error, "mkstemp() failed: ", errno);
 		return nullptr;
 	}
+
+#ifdef __ANDROID__
+	// mkstemp's 0600 survives the rename: in the shared external storage the app's data root lives in, that hid the
+	// settings from adb (group ext_data_rw), unlike every other file the app writes (0660 under Android's app umask).
+	fchmod(fd, 0660);
+#endif
 
 	std::FILE* fp = fdopen(fd, mode);
 	if (!fp)
