@@ -21,3 +21,4 @@ Labo commun `odin3-lab` (VM ARM64 pages 4 Ko + profil Vulkan de l'Adreno 830) po
 
 | Jeu | Statut | Vu jusqu'à | Mesure | Notes | Testé le | Build |
 |---|---|---|---|---|---|---|
+| Dragon Ball Z: Budokai Tenkaichi 3 (PAL, SLES-54945) | 🟢 | combat Raditz (Dragon History, Saga Saiyan), 1 min | 6x (~4K) : 50 fps (100 %), GPU 79-86 %, EE 31-34 % ; 1x : 50 fps, GPU ≤ 18 % | Vulkan (Auto), patchs GameDB ; son non vérifié | 2026-10-22 | odin3 95c415d14 |
