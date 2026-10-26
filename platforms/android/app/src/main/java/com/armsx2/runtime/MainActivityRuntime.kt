@@ -2653,6 +2653,8 @@ open class MainActivityRuntime : ComponentActivity() {
         // while the activity is paused.
         getSystemService(android.hardware.input.InputManager::class.java)
             ?.registerInputDeviceListener(inputDeviceListener, null)
+        getSystemService(android.hardware.display.DisplayManager::class.java)
+            ?.registerDisplayListener(displayListener, null)
         setupComplete.value = prefs.getBoolean("setupComplete", false)
         systemDir.value = prefs.getString("systemDir", null)
         bios.value = prefs.getString("bios", null)
@@ -3970,11 +3972,16 @@ open class MainActivityRuntime : ComponentActivity() {
         }
         val physicalCode = event.keyCode
         if (physicalCode == KeyEvent.KEYCODE_UNKNOWN) return false
-        if (type == KeyEventType.KeyDown) padHeldKeys.add(padHeldKey(event)) else padHeldKeys.remove(padHeldKey(event))
-
         // Local co-op routing and macro precedence exactly match the old Compose
-        // onKeyEvent path; only the dispatch layer has changed.
-        val port = com.armsx2.input.PadRouter.portForDevice(event.deviceId)
+        // onKeyEvent path; only the dispatch layer has changed. A pad that plays for no one
+        // joins on a press and is swallowed until then.
+        val port = com.armsx2.input.PadRouter.portForDevice(
+            event.deviceId, press = type == KeyEventType.KeyDown && event.repeatCount == 0,
+        )
+        if (type == KeyEventType.KeyUp) padHeldKeys.remove(padHeldKey(event))
+        if (port < 0) return true
+        if (type == KeyEventType.KeyDown) padHeldKeys.add(padHeldKey(event))
+
         val fromController = !isVolumeKey(physicalCode)
         com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(physicalCode)?.let { macro ->
             com.armsx2.ui.touch.TouchControls.fireMacro(
@@ -4605,6 +4612,7 @@ open class MainActivityRuntime : ComponentActivity() {
             // Local co-op: which PS2 port this physical device drives (P1=0 / P2=1).
             // Stick mode + CUSTOM binds are read per-player; emits route to `port`.
             val port = com.armsx2.input.PadRouter.portForDevice(ev.deviceId)
+            if (port < 0) return true
             // SOURCE_TOUCHSCREEN motion events go through dispatchTouchEvent,
             // not here — generic motion is gamepad / mouse / stylus. A controller
             // that is actually being used latches the touch controls off; its
@@ -4812,6 +4820,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // own player's settings. Sampling as P1 unconditionally meant the second pad overwrote
         // the first's reading, and the P2 rows showed P1's curve.
         val port = com.armsx2.input.PadRouter.portForDevice(ev.deviceId)
+        if (port < 0) return
         val tier = ControllerMappings.liveTier(port)
         for (left in booleanArrayOf(true, false)) {
             val raw = triggerTravel(ev, left)
@@ -5951,6 +5960,17 @@ open class MainActivityRuntime : ComponentActivity() {
         }
     }
 
+    /** Leaving the dock hands Player 1 back to the handheld's own pad, as on a Switch. */
+    private val displayListener = object : android.hardware.display.DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {
+            val displays = getSystemService(android.hardware.display.DisplayManager::class.java)
+                ?.getDisplays(android.hardware.display.DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
+            if (displays != null && displays.isEmpty()) com.armsx2.input.PadRouter.onUndocked()
+        }
+    }
+
     override fun onPause() {
         // Take the second-display panel down with the app. A Presentation is not torn down by the
         // activity stopping, so it otherwise stayed on the external screen while the user was off
@@ -6051,6 +6071,8 @@ open class MainActivityRuntime : ComponentActivity() {
     override fun onDestroy() {
         getSystemService(android.hardware.input.InputManager::class.java)
             ?.unregisterInputDeviceListener(inputDeviceListener)
+        getSystemService(android.hardware.display.DisplayManager::class.java)
+            ?.unregisterDisplayListener(displayListener)
         // On a CONFIGURATION-driven recreate (e.g. Samsung DeX moving the activity to
         // an external display, density/uiMode change) Android destroys+recreates us.
         // Do NOT tear down the native VM or hard-kill the process then — that races the

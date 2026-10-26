@@ -5,8 +5,11 @@ import android.view.InputDevice
 /**
  * Auto-assigns physical controllers to PS2 pad slots for local multiplayer.
  *
- *  - Multitap OFF (default): first distinct gamepad = Player 1 (slot 0); next = Player 2
- *    (slot 1, hot-plugged via [onPlayer2Joined]); any further pads fold into Player 1.
+ *  - Like a Switch, a pad joins on a button press: as Player 1 if the handheld's own pad or
+ *    nobody holds it, else on the first free slot. The handheld's own pad holds Player 1
+ *    while nobody else does, and takes it back when its pad leaves or the handheld undocks.
+ *  - Multitap OFF (default): Player 1 (slot 0) and Player 2 (slot 1, hot-plugged via
+ *    [onPlayer2Joined]); any further pads play for no one.
  *  - Multitap ON: up to 8 distinct gamepads claim unified slots 0..7. The unified layout
  *    matches the native engine (Sio.h): slots 0,1 = the two port mains; 2,3,4 = port-0
  *    taps; 5,6,7 = port-1 taps. Filling the next free slot yields (P1, P2, port-0 taps,
@@ -17,13 +20,16 @@ import android.view.InputDevice
  * touch controls and all menu navigation always use slot 0 — they never go through here.
  * Reset on VM start AND stop ([reset]) so each session re-pairs deterministically.
  *
- * Called only from the in-game input dispatch where a real `event.deviceId` is live.
+ * Called only from the in-game input dispatch where a real `event.deviceId` is live; a -1
+ * port means the pad plays for no one and its input is dropped.
  */
 object PadRouter {
     // Nintendo USB/Bluetooth vendor id. A Joy-Con pair enumerates as TWO InputDevices
     // (L + R) under this vendor, but they are one physical controller — so both halves
     // are routed to a single port instead of being split across players.
     private const val NINTENDO_VENDOR_ID = 0x057E
+    // The handheld's own pad, which gives Player 1 up to any pad that joins
+    private const val BUILT_IN_CONTROLLER_NAME = "Odin Controller"
     /** Unified slot count: 2 port mains + 6 multitap slots. */
     const val MAX_PADS = 8
     // Unified slot -> claimed Android deviceId (-1 = unclaimed).
@@ -277,6 +283,27 @@ object PadRouter {
     fun forgetDevice(deviceId: Int) {
         if (deviceId < 0) return
         for (i in slots.indices) if (slots[i] == deviceId) slots[i] = -1
+        if (slots[0] == -1) returnPlayerOneToBuiltIn()
+    }
+
+    /** Leaving the dock hands Player 1 back to the handheld's own pad, as on a Switch. */
+    fun onUndocked() = returnPlayerOneToBuiltIn()
+
+    private fun returnPlayerOneToBuiltIn() {
+        if (allToPlayer1 || pinned.containsValue(0)) return
+        connectedPads().firstOrNull { it.name == BUILT_IN_CONTROLLER_NAME }?.let { claim(0, it.deviceId) }
+    }
+
+    private fun isBuiltIn(deviceId: Int): Boolean =
+        runCatching { InputDevice.getDevice(deviceId)?.name }.getOrNull() == BUILT_IN_CONTROLLER_NAME
+
+    private fun claim(slot: Int, deviceId: Int): Int {
+        for (i in slots.indices) if (slots[i] == deviceId) slots[i] = -1
+        slots[slot] = deviceId
+        if (slot == 1 && !pad2Enabled) { pad2Enabled = true; onPlayer2Joined?.invoke() }
+        val name = runCatching { InputDevice.getDevice(deviceId)?.name }.getOrNull()
+        android.util.Log.i("ARMSX2", "${name ?: deviceId} plays as player ${slot + 1}")
+        return slot
     }
 
     /** Free every slot whose claimed device is no longer connected. Called on resume / focus regain
@@ -346,10 +373,11 @@ object PadRouter {
 
     /**
      * Map a physical input device to a unified PS2 pad slot (0..7, or 0..1 when multitap
-     * is off), claiming the next free slot. Synthetic / virtual events (deviceId < 0)
-     * and non-gamepad nodes never claim a slot — they're treated as Player 1.
+     * is off). A pad that plays for no one joins on a button [press] and gets -1 until then.
+     * Synthetic / virtual events (deviceId < 0) and non-gamepad nodes never claim a slot —
+     * they're treated as Player 1.
      */
-    fun portForDevice(deviceId: Int): Int {
+    fun portForDevice(deviceId: Int, press: Boolean = false): Int {
         if (allToPlayer1) {
             // Remembered as the last to press, so it answers for player 1 (deviceIdForPort). Only
             // a real pad node: a DualSense's touchpad node is not where its motors are.
@@ -390,23 +418,21 @@ object PadRouter {
         val descriptor = dev?.descriptor
         if (descriptor != null) {
             pinned[descriptor]?.let { port ->
-                if (port < maxSlots) {
-                    slots[port] = deviceId
-                    if (port == 1 && !pad2Enabled) { pad2Enabled = true; onPlayer2Joined?.invoke() }
-                    return port
-                }
+                if (port < maxSlots) return claim(port, deviceId)
             }
         }
-        for (i in 0 until maxSlots) {
-            // A pinned slot belongs to its controller even while that controller is away;
-            // handing it to the next pad to press a button is what the pin exists to prevent.
-            if (pinned.containsValue(i)) continue
-            if (slots[i] == -1) {
-                slots[i] = deviceId
-                if (i == 1 && !pad2Enabled) { pad2Enabled = true; onPlayer2Joined?.invoke() }
-                return i
-            }
+        // A pinned slot belongs to its controller even while that controller is away;
+        // handing it to the next pad to press a button is what the pin exists to prevent.
+        val open = (0 until maxSlots).filter { !pinned.containsValue(it) }
+        val builtIn = dev?.name == BUILT_IN_CONTROLLER_NAME
+        if (builtIn && 0 in open &&
+            (slots[0] == -1 || (press && (1 until maxSlots).all { slots[it] == -1 }))
+        ) return claim(0, deviceId)
+        if (!press) return -1
+        for (i in open) {
+            val holder = slots[i]
+            if (holder == -1 || (!builtIn && isBuiltIn(holder))) return claim(i, deviceId)
         }
-        return 0 // all slots taken -> fold into Player 1
+        return -1 // every slot taken -> plays for no one
     }
 }
