@@ -3803,6 +3803,26 @@ open class MainActivityRuntime : ComponentActivity() {
                     triggerHotkeyOwner.remove(kc)
                 }
             }
+            // A pad's Home button, or Select+Start held together, leaves the game back to the
+            // frontend that launched it (ES-DE), unless a bound hotkey already uses those buttons.
+            // Home quits on release so the release does not reach the frontend
+            if (event.isFromSource(InputDevice.SOURCE_GAMEPAD) ||
+                event.isFromSource(InputDevice.SOURCE_JOYSTICK)) {
+                if (kc == KeyEvent.KEYCODE_BUTTON_MODE && !ControllerMappings.isHotkeyKeyOrModifier(kc)) {
+                    if (!down) exitApp()
+                    return true
+                }
+                if (down && event.repeatCount == 0 &&
+                    (kc == KeyEvent.KEYCODE_BUTTON_SELECT || kc == KeyEvent.KEYCODE_BUTTON_START) &&
+                    heldKeys.contains(KeyEvent.KEYCODE_BUTTON_SELECT) &&
+                    heldKeys.contains(KeyEvent.KEYCODE_BUTTON_START) &&
+                    !ControllerMappings.isHotkeyKeyOrModifier(KeyEvent.KEYCODE_BUTTON_SELECT) &&
+                    !ControllerMappings.isHotkeyKeyOrModifier(KeyEvent.KEYCODE_BUTTON_START)
+                ) {
+                    exitApp()
+                    return true
+                }
+            }
             val matched = ControllerMappings.matchHotkey(kc, matchKeys)
             if (!down && matched != null && gameplayHotkeyKeysDown.remove(kc))
                 dispatchGameplayKey(event)
